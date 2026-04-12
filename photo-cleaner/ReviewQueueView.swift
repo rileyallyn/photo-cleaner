@@ -67,6 +67,7 @@ struct ReviewQueueView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showingAlert = false
     @State private var errorMessage: String? = nil
+    @State private var previewItem: QueuedPhotoPreviewItem?
     
     var body: some View {
         NavigationStack {
@@ -88,6 +89,10 @@ struct ReviewQueueView: View {
                                             .symbolRenderingMode(.palette)
                                     }
                                     .padding(4)
+                                }
+                                .contentShape(Rectangle())
+                                .onLongPressGesture(minimumDuration: 0.45) {
+                                    previewItem = QueuedPhotoPreviewItem(asset: asset)
                                 }
                             }
                         }
@@ -142,6 +147,9 @@ struct ReviewQueueView: View {
         } message: {
             Text(errorMessage ?? "Unknown error")
         }
+        .fullScreenCover(item: $previewItem) { item in
+            DeletionQueuePhotoPreview(asset: item.asset)
+        }
     }
     
     private var emptyQueueContent: some View {
@@ -152,5 +160,95 @@ struct ReviewQueueView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemGroupedBackground))
+    }
+}
+
+// MARK: - Long-press full-screen preview
+
+private struct QueuedPhotoPreviewItem: Identifiable {
+    let id: String
+    let asset: PHAsset
+    
+    init(asset: PHAsset) {
+        self.asset = asset
+        self.id = asset.localIdentifier
+    }
+}
+
+private struct DeletionQueuePhotoPreview: View {
+    let asset: PHAsset
+    @Environment(\.dismiss) private var dismiss
+    @State private var image: UIImage?
+    @State private var imageRequestID: PHImageRequestID = PHInvalidImageRequestID
+    
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    ProgressView()
+                        .controlSize(.large)
+                        .tint(.white)
+                }
+            }
+            .navigationTitle("Preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(.visible, for: .navigationBar)
+            .toolbarColorScheme(.dark, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .tint(.white)
+                }
+            }
+        }
+        .onAppear {
+            loadPreviewImage()
+        }
+        .onDisappear {
+            if imageRequestID != PHInvalidImageRequestID {
+                PHImageManager.default().cancelImageRequest(imageRequestID)
+                imageRequestID = PHInvalidImageRequestID
+            }
+        }
+    }
+    
+    private func loadPreviewImage() {
+        image = nil
+        let manager = PHImageManager.default()
+        let options = PHImageRequestOptions()
+        options.isNetworkAccessAllowed = true
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .exact
+        options.version = .current
+        
+        let w = max(CGFloat(asset.pixelWidth), 1)
+        let h = max(CGFloat(asset.pixelHeight), 1)
+        let maxEdge: CGFloat = 4096
+        let scale = min(maxEdge / max(w, h), 1)
+        let target = CGSize(width: w * scale, height: h * scale)
+        
+        imageRequestID = manager.requestImage(
+            for: asset,
+            targetSize: target,
+            contentMode: .aspectFit,
+            options: options
+        ) { result, info in
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            if cancelled { return }
+            DispatchQueue.main.async {
+                if let result {
+                    self.image = result
+                }
+                self.imageRequestID = PHInvalidImageRequestID
+            }
+        }
     }
 }
