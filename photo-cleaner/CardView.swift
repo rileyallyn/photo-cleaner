@@ -1,3 +1,5 @@
+import CoreLocation
+import MapKit
 import SwiftUI
 import Photos
 
@@ -8,10 +10,66 @@ struct CardView: View {
     
     @State private var offset: CGSize = .zero
     @State private var image: UIImage? = nil
+    @State private var isShowingDetails = false
     
     private let threshold: CGFloat = 150
+    private let dragMinimumDistance: CGFloat = 28
     
     var body: some View {
+        ZStack {
+            flipStack
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 6)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
+        )
+        .offset(x: offset.width, y: offset.height * 0.4)
+        .rotationEffect(.degrees(Double(offset.width / 20)))
+        .gesture(swipeDragGesture)
+        .simultaneousGesture(flipTapGesture)
+        .onAppear {
+            loadImage()
+        }
+        .onChange(of: asset.localIdentifier) { _, _ in
+            offset = .zero
+            image = nil
+            isShowingDetails = false
+            loadImage()
+        }
+    }
+    
+    private var flipStack: some View {
+        ZStack {
+            photoFace
+                .rotation3DEffect(
+                    .degrees(isShowingDetails ? 180 : 0),
+                    axis: (x: 0, y: 1, z: 0),
+                    anchor: .center,
+                    anchorZ: 0,
+                    perspective: 0.92
+                )
+                // Without z-index, the opaque metadata face draws above the photo even when “rotated away” —
+                // SwiftUI doesn’t cull back-faces, so the image disappears.
+                .zIndex(isShowingDetails ? 0 : 1)
+                .allowsHitTesting(!isShowingDetails)
+            PhotoMetadataBackView(asset: asset)
+                .rotation3DEffect(
+                    .degrees(isShowingDetails ? 0 : -180),
+                    axis: (x: 0, y: 1, z: 0),
+                    anchor: .center,
+                    anchorZ: 0,
+                    perspective: 0.92
+                )
+                .zIndex(isShowingDetails ? 1 : 0)
+                .allowsHitTesting(isShowingDetails)
+        }
+    }
+    
+    private var photoFace: some View {
         ZStack {
             Group {
                 if let image = image {
@@ -27,7 +85,6 @@ struct CardView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .clipped()
             
-            // Badges pinned to corners — avoid HStack/VStack + Spacer() which inflates unbounded height in ZStack parents.
             ZStack(alignment: .topLeading) {
                 Color.clear
                 HStack {
@@ -65,50 +122,46 @@ struct CardView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 6)
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
-        .offset(x: offset.width, y: offset.height * 0.4)
-        .rotationEffect(.degrees(Double(offset.width / 20)))
-        .gesture(
-            DragGesture()
-                .onChanged { gesture in
-                    offset = gesture.translation
+    }
+    
+    private var swipeDragGesture: some Gesture {
+        DragGesture(minimumDistance: dragMinimumDistance)
+            .onChanged { gesture in
+                offset = gesture.translation
+            }
+            .onEnded { _ in
+                endSwipeDrag()
+            }
+    }
+    
+    private var flipTapGesture: some Gesture {
+        TapGesture()
+            .onEnded {
+                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                    isShowingDetails.toggle()
                 }
-                .onEnded { gesture in
-                    if offset.width > threshold {
-                        // Swipe Right - KEEP
-                        withAnimation {
-                            offset = CGSize(width: 1000, height: 0)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            onSwipeRight()
-                        }
-                    } else if offset.width < -threshold {
-                        // Swipe Left - DELETE
-                        withAnimation {
-                            offset = CGSize(width: -1000, height: 0)
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            onSwipeLeft()
-                        }
-                    } else {
-                        // Reset
-                        withAnimation(.spring()) {
-                            offset = .zero
-                        }
-                    }
-                }
-        )
-        .onAppear {
-            loadImage()
-        }
-        .onChange(of: asset.localIdentifier) { _, _ in
-            offset = .zero
-            image = nil
-            loadImage()
+            }
+    }
+    
+    private func endSwipeDrag() {
+        if offset.width > threshold {
+            withAnimation {
+                offset = CGSize(width: 1000, height: 0)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                onSwipeRight()
+            }
+        } else if offset.width < -threshold {
+            withAnimation {
+                offset = CGSize(width: -1000, height: 0)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                onSwipeLeft()
+            }
+        } else {
+            withAnimation(.spring()) {
+                offset = .zero
+            }
         }
     }
     
@@ -126,5 +179,159 @@ struct CardView: View {
                 self.image = result
             }
         }
+    }
+}
+
+// MARK: - Metadata back
+
+private struct PhotoMetadataBackView: View {
+    let asset: PHAsset
+    
+    @State private var placeLabel: String?
+    @State private var geocodeFailed = false
+    @State private var activeReverseRequest: MKReverseGeocodingRequest?
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Photo info")
+                    .font(.title2.weight(.bold))
+                
+                if let date = asset.creationDate {
+                    metadataRow(icon: "calendar", title: "Date", value: date.formatted(date: .long, time: .omitted))
+                    metadataRow(icon: "clock", title: "Time", value: date.formatted(date: .omitted, time: .shortened))
+                } else {
+                    metadataRow(icon: "calendar", title: "Date", value: "Unknown")
+                }
+                
+                metadataRow(
+                    icon: "aspectratio",
+                    title: "Dimensions",
+                    value: "\(asset.pixelWidth) × \(asset.pixelHeight)"
+                )
+                
+                if let loc = asset.location {
+                    if let placeLabel {
+                        metadataRow(icon: "mappin.and.ellipse", title: "Location", value: placeLabel)
+                    } else if geocodeFailed {
+                        metadataRow(
+                            icon: "location",
+                            title: "Coordinates",
+                            value: String(format: "%.5f, %.5f", loc.coordinate.latitude, loc.coordinate.longitude)
+                        )
+                    } else {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .foregroundStyle(.secondary)
+                                .frame(width: 22)
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Looking up location…")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    metadataRow(icon: "location.slash", title: "Location", value: "None in photo")
+                }
+                
+                if asset.isFavorite {
+                    Label("Favorite", systemImage: "heart.fill")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.pink)
+                }
+                
+                if asset.mediaSubtypes.contains(.photoScreenshot) {
+                    Label("Screenshot", systemImage: "iphone")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                
+                Text("Tap to flip back")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.secondarySystemGroupedBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .onAppear {
+            resolvePlaceIfNeeded()
+        }
+        .onChange(of: asset.localIdentifier) { _, _ in
+            activeReverseRequest?.cancel()
+            activeReverseRequest = nil
+            placeLabel = nil
+            geocodeFailed = false
+            resolvePlaceIfNeeded()
+        }
+    }
+    
+    private func metadataRow(icon: String, title: String, value: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+            }
+        }
+    }
+    
+    private func resolvePlaceIfNeeded() {
+        guard let location = asset.location else { return }
+        placeLabel = nil
+        geocodeFailed = false
+        
+        activeReverseRequest?.cancel()
+        activeReverseRequest = nil
+        
+        guard let request = MKReverseGeocodingRequest(location: location) else {
+            geocodeFailed = true
+            return
+        }
+        activeReverseRequest = request
+        let assetId = asset.localIdentifier
+        
+        Task { @MainActor in
+            do {
+                let items = try await request.mapItems
+                guard assetId == asset.localIdentifier else { return }
+                activeReverseRequest = nil
+                if let item = items.first {
+                    placeLabel = formattedPlace(from: item)
+                } else {
+                    geocodeFailed = true
+                }
+            } catch {
+                guard assetId == asset.localIdentifier else { return }
+                activeReverseRequest = nil
+                geocodeFailed = true
+            }
+        }
+    }
+    
+    private func formattedPlace(from item: MKMapItem) -> String {
+        let coordinate = item.location.coordinate
+        let coords = String(format: "%.4f, %.4f", coordinate.latitude, coordinate.longitude)
+        if let name = item.name, !name.isEmpty {
+            if let full = item.address?.fullAddress, !full.isEmpty {
+                return "\(name) · \(full)"
+            }
+            return name
+        }
+        if let full = item.address?.fullAddress, !full.isEmpty {
+            return full
+        }
+        return coords
     }
 }

@@ -73,6 +73,9 @@ class PhotoManager: ObservableObject {
             fetchedAssets.append(asset)
         }
         
+        let queuedIds = Set(deletionQueue.map(\.localIdentifier))
+        fetchedAssets = fetchedAssets.filter { !queuedIds.contains($0.localIdentifier) }
+        
         if mode == .random {
             fetchedAssets.shuffle()
         }
