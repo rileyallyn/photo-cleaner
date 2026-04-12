@@ -1,6 +1,6 @@
+import Combine
 import Photos
 import SwiftUI
-import Combine
 
 enum PhotoMode: String, CaseIterable, Identifiable {
     case newest = "Newest First"
@@ -16,14 +16,25 @@ class PhotoManager: ObservableObject {
     @Published var assets: [PHAsset] = []
     @Published var deletionQueue: Set<PHAsset> = []
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
+    /// `false` until the first `PHPhotoLibrary.authorizationStatus` read finishes — avoids blocking first frame.
+    @Published var hasResolvedInitialAuthorization = false
     @Published var isLoading = false
     /// Mode for the current swipe session (set when `fetchPhotos` completes).
     @Published var activeMode: PhotoMode? = nil
     /// Total photos loaded for the current session (for progress UI).
     @Published var sessionTotalCount: Int = 0
     
-    init() {
-        checkAuthorization()
+    private static let deletionQueueStorageKey = "PhotoManager.deletionQueue.localIdentifiers"
+    
+    init() {}
+    
+    /// Call from `ContentView.task` so the window can render before touching PhotoKit.
+    func performInitialAuthorizationRead() async {
+        guard !hasResolvedInitialAuthorization else { return }
+        await Task.yield()
+        authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        hasResolvedInitialAuthorization = true
+        loadPersistedDeletionQueueIfAllowed()
     }
     
     func checkAuthorization() {
@@ -32,6 +43,7 @@ class PhotoManager: ObservableObject {
     
     func requestAuthorization() async {
         authorizationStatus = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        loadPersistedDeletionQueueIfAllowed()
     }
     
     func fetchPhotos(mode: PhotoMode) {
@@ -73,6 +85,7 @@ class PhotoManager: ObservableObject {
     
     func addToDeletionQueue(_ asset: PHAsset) {
         deletionQueue.insert(asset)
+        persistDeletionQueueIdentifiers()
         if let index = assets.firstIndex(of: asset) {
             assets.remove(at: index)
         }
@@ -90,9 +103,37 @@ class PhotoManager: ObservableObject {
             PHAssetChangeRequest.deleteAssets(assetsToDelete as NSArray)
         }
         deletionQueue.removeAll()
+        persistDeletionQueueIdentifiers()
     }
     
     func removeFromDeletionQueue(_ asset: PHAsset) {
         deletionQueue.remove(asset)
+        persistDeletionQueueIdentifiers()
+    }
+    
+    // MARK: - Deletion queue persistence
+    
+    private func persistDeletionQueueIdentifiers() {
+        let ids = deletionQueue.map(\.localIdentifier).sorted()
+        UserDefaults.standard.set(ids, forKey: Self.deletionQueueStorageKey)
+    }
+    
+    /// Reloads queued assets from disk after the user grants access (or on cold launch when already authorized).
+    private func loadPersistedDeletionQueueIfAllowed() {
+        guard authorizationStatus == .authorized || authorizationStatus == .limited else { return }
+        guard let stored = UserDefaults.standard.stringArray(forKey: Self.deletionQueueStorageKey), !stored.isEmpty else {
+            return
+        }
+        let fetch = PHAsset.fetchAssets(withLocalIdentifiers: stored, options: nil)
+        var restored = Set<PHAsset>()
+        fetch.enumerateObjects { asset, _, _ in
+            if asset.mediaType == .image {
+                restored.insert(asset)
+            }
+        }
+        deletionQueue = restored
+        if restored.count != stored.count {
+            persistDeletionQueueIdentifiers()
+        }
     }
 }

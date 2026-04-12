@@ -9,7 +9,12 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             VStack {
-                if photoManager.authorizationStatus == .authorized || photoManager.authorizationStatus == .limited {
+                if !photoManager.hasResolvedInitialAuthorization {
+                    ProgressView()
+                        .controlSize(.large)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel("Loading")
+                } else if photoManager.authorizationStatus == .authorized || photoManager.authorizationStatus == .limited {
                     modeSelectionView
                 } else if photoManager.authorizationStatus == .notDetermined {
                     requestPermissionView
@@ -50,6 +55,9 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingReview) {
                 ReviewQueueView(photoManager: photoManager)
+            }
+            .task {
+                await photoManager.performInitialAuthorizationRead()
             }
         }
     }
