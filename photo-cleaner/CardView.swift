@@ -8,8 +8,11 @@ struct CardView: View {
     let onSwipeLeft: () -> Void
     let onSwipeRight: () -> Void
     
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    
     @State private var offset: CGSize = .zero
     @State private var image: UIImage? = nil
+    @State private var imageRequestID: PHImageRequestID = PHInvalidImageRequestID
     @State private var isShowingDetails = false
     @State private var zoomScale: CGFloat = 1.0
     
@@ -32,12 +35,19 @@ struct CardView: View {
         .rotationEffect(.degrees(Double(offset.width / 20)))
         .gesture(swipeDragGesture)
         .simultaneousGesture(flipTapGesture)
+        // Pinch must not use an exclusive `.gesture` on the image — that blocks the card’s drag.
+        .simultaneousGesture(photoMagnificationGesture)
         .onAppear {
             loadImage()
         }
+        .onDisappear {
+            cancelImageRequest()
+        }
         .onChange(of: asset.localIdentifier) { _, _ in
+            cancelImageRequest()
             offset = .zero
             image = nil
+            zoomScale = 1.0
             isShowingDetails = false
             loadImage()
         }
@@ -78,17 +88,6 @@ struct CardView: View {
                         .resizable()
                         .aspectRatio(contentMode: .fill)
                         .scaleEffect(zoomScale)
-                        .gesture(
-                            MagnificationGesture()
-                                .onChanged { value in
-                                    zoomScale = value
-                                }
-                                .onEnded { _ in
-                                    withAnimation(.spring()) {
-                                        zoomScale = 1.0
-                                    }
-                                }
-                        )
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -143,55 +142,121 @@ struct CardView: View {
                 offset = gesture.translation
             }
             .onEnded { _ in
-                endSwipeDrag()
+                // Gesture transactions disable implicit animation; defer so `withAnimation` applies.
+                DispatchQueue.main.async {
+                    endSwipeDrag()
+                }
+            }
+    }
+    
+    private var photoMagnificationGesture: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                guard !isShowingDetails else { return }
+                zoomScale = max(1.0, min(4.0, value))
+            }
+            .onEnded { _ in
+                guard !isShowingDetails else { return }
+                if accessibilityReduceMotion {
+                    zoomScale = 1.0
+                } else {
+                    withAnimation(.spring()) {
+                        zoomScale = 1.0
+                    }
+                }
             }
     }
     
     private var flipTapGesture: some Gesture {
         TapGesture()
             .onEnded {
-                withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                if accessibilityReduceMotion {
                     isShowingDetails.toggle()
+                } else {
+                    withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                        isShowingDetails.toggle()
+                    }
                 }
             }
     }
     
+    private static let swipeFlyOutDuration: TimeInterval = 0.32
+    
     private func endSwipeDrag() {
+        let reduceMotion = accessibilityReduceMotion
         if offset.width > threshold {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            withAnimation {
+            if reduceMotion {
                 offset = CGSize(width: 1000, height: 0)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                onSwipeRight()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    onSwipeRight()
+                }
+            } else {
+                withAnimation(.easeInOut(duration: Self.swipeFlyOutDuration)) {
+                    offset = CGSize(width: 1000, height: 0)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.swipeFlyOutDuration) {
+                    onSwipeRight()
+                }
             }
         } else if offset.width < -threshold {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            withAnimation {
+            if reduceMotion {
                 offset = CGSize(width: -1000, height: 0)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                onSwipeLeft()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    onSwipeLeft()
+                }
+            } else {
+                withAnimation(.easeInOut(duration: Self.swipeFlyOutDuration)) {
+                    offset = CGSize(width: -1000, height: 0)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.swipeFlyOutDuration) {
+                    onSwipeLeft()
+                }
             }
         } else {
-            withAnimation(.spring()) {
+            if reduceMotion {
                 offset = .zero
+            } else {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.78)) {
+                    offset = .zero
+                }
             }
         }
     }
     
+    private func cancelImageRequest() {
+        if imageRequestID != PHInvalidImageRequestID {
+            PHImageManager.default().cancelImageRequest(imageRequestID)
+            imageRequestID = PHInvalidImageRequestID
+        }
+    }
+    
     private func loadImage() {
+        cancelImageRequest()
         let manager = PHImageManager.default()
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .highQualityFormat
         
-        manager.requestImage(for: asset,
-                             targetSize: CGSize(width: 1000, height: 1000),
-                             contentMode: .aspectFill,
-                             options: options) { result, _ in
-            if let result = result {
-                self.image = result
+        let assetId = asset.localIdentifier
+        imageRequestID = manager.requestImage(
+            for: asset,
+            targetSize: CGSize(width: 1000, height: 1000),
+            contentMode: .aspectFill,
+            options: options
+        ) { result, info in
+            let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+            if cancelled { return }
+            DispatchQueue.main.async {
+                guard assetId == self.asset.localIdentifier else { return }
+                if let result {
+                    self.image = result
+                }
+                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
+                if !degraded {
+                    self.imageRequestID = PHInvalidImageRequestID
+                }
             }
         }
     }

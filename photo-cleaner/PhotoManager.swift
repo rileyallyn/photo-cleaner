@@ -12,7 +12,7 @@ enum PhotoMode: String, CaseIterable, Identifiable {
 }
 
 @MainActor
-class PhotoManager: ObservableObject {
+final class PhotoManager: ObservableObject {
     @Published var assets: [PHAsset] = []
     @Published var deletionQueue: Set<PHAsset> = []
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
@@ -27,7 +27,14 @@ class PhotoManager: ObservableObject {
     
     private static let deletionQueueStorageKey = "PhotoManager.deletionQueue.localIdentifiers"
     
-    init() {}
+    /// Bumps whenever a new total-size calculation starts; stale background work ignores the result.
+    private var deletionQueueSizeCalculationID = 0
+    
+    private let libraryChangeObserver = PhotoLibraryChangeObserver()
+    
+    init() {
+        libraryChangeObserver.photoManager = self
+    }
     
     /// Call from `ContentView.task` so the window can render before touching PhotoKit.
     func performInitialAuthorizationRead() async {
@@ -38,8 +45,13 @@ class PhotoManager: ObservableObject {
         loadPersistedDeletionQueueIfAllowed()
     }
     
-    func checkAuthorization() {
+    /// Refresh status after returning from Settings or other apps (`scenePhase == .active`).
+    func refreshAuthorizationFromSystem() {
+        let previous = authorizationStatus
         authorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if authorizationStatus != previous {
+            loadPersistedDeletionQueueIfAllowed()
+        }
     }
     
     func requestAuthorization() async {
@@ -53,38 +65,14 @@ class PhotoManager: ObservableObject {
         activeMode = nil
         sessionTotalCount = 0
         
-        let fetchOptions = PHFetchOptions()
-        
-        switch mode {
-        case .newest:
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        case .oldest:
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        case .screenshots:
-            fetchOptions.predicate = NSPredicate(format: "(mediaSubtype & %d) != 0", PHAssetMediaSubtype.photoScreenshot.rawValue)
-            fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-        case .random:
-            // Fetch all and then shuffle
-            break
-        }
-        
-        let allPhotos = PHAsset.fetchAssets(with: .image, options: fetchOptions)
-        var fetchedAssets: [PHAsset] = []
-        allPhotos.enumerateObjects { asset, _, _ in
-            fetchedAssets.append(asset)
-        }
-        
         let queuedIds = Set(deletionQueue.map(\.localIdentifier))
-        fetchedAssets = fetchedAssets.filter { !queuedIds.contains($0.localIdentifier) }
-        
-        if mode == .random {
-            fetchedAssets.shuffle()
+        Task {
+            let fetched = await Self.fetchAssetsInBackground(mode: mode, excludingLocalIdentifiers: queuedIds)
+            self.assets = fetched
+            self.sessionTotalCount = fetched.count
+            self.activeMode = mode
+            self.isLoading = false
         }
-        
-        self.assets = fetchedAssets
-        self.sessionTotalCount = fetchedAssets.count
-        self.activeMode = mode
-        self.isLoading = false
     }
     
     func addToDeletionQueue(_ asset: PHAsset) {
@@ -108,6 +96,7 @@ class PhotoManager: ObservableObject {
             PHAssetChangeRequest.deleteAssets(assetsToDelete as NSArray)
         }
         deletionQueue.removeAll()
+        deletionQueueSizeCalculationID += 1
         deletionQueueSize = 0
         persistDeletionQueueIdentifiers()
     }
@@ -119,19 +108,114 @@ class PhotoManager: ObservableObject {
     }
     
     func calculateDeletionQueueSize() {
-        let assets = Array(deletionQueue)
-        Task {
-            var totalBytes: Int64 = 0
-            for asset in assets {
-                let resources = PHAssetResource.assetResources(for: asset)
-                if let resource = resources.first,
-                   let size = resource.value(forKey: "fileSize") as? Int64 {
-                    totalBytes += size
+        deletionQueueSizeCalculationID += 1
+        let calculationID = deletionQueueSizeCalculationID
+        let snapshot = Array(deletionQueue)
+        
+        Task.detached {
+            var total: Int64 = 0
+            for asset in snapshot {
+                let bytes = await Self.byteLengthForPrimaryResource(of: asset)
+                total += bytes
+                let obsolete = await MainActor.run { [weak self] in
+                    guard let self else { return true }
+                    return calculationID != self.deletionQueueSizeCalculationID
                 }
+                if obsolete { return }
             }
-            let finalBytes = totalBytes
-            await MainActor.run {
-                self.deletionQueueSize = finalBytes
+            let finalTotal = total
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard calculationID == self.deletionQueueSizeCalculationID else { return }
+                self.deletionQueueSize = finalTotal
+            }
+        }
+    }
+    
+    /// Sum of `Data` chunks delivered for the asset’s first resource via `PHAssetResourceManager` (documented API).
+    nonisolated private static func byteLengthForPrimaryResource(of asset: PHAsset) async -> Int64 {
+        await withCheckedContinuation { continuation in
+            let resources = PHAssetResource.assetResources(for: asset)
+            guard let resource = resources.first else {
+                continuation.resume(returning: 0)
+                return
+            }
+            var total: Int64 = 0
+            PHAssetResourceManager.default().requestData(
+                for: resource,
+                options: nil,
+                dataReceivedHandler: { data in
+                    total += Int64(data.count)
+                },
+                completionHandler: { _ in
+                    continuation.resume(returning: total)
+                }
+            )
+        }
+    }
+    
+    nonisolated private static func fetchAssetsInBackground(
+        mode: PhotoMode,
+        excludingLocalIdentifiers: Set<String>
+    ) async -> [PHAsset] {
+        await Task.detached {
+            let fetchOptions = PHFetchOptions()
+            switch mode {
+            case .newest:
+                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            case .oldest:
+                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            case .screenshots:
+                fetchOptions.predicate = NSPredicate(
+                    format: "(mediaSubtype & %d) != 0",
+                    PHAssetMediaSubtype.photoScreenshot.rawValue
+                )
+                fetchOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            case .random:
+                break
+            }
+            
+            let allPhotos = PHAsset.fetchAssets(with: .image, options: fetchOptions)
+            var fetchedAssets: [PHAsset] = []
+            allPhotos.enumerateObjects { asset, _, _ in
+                fetchedAssets.append(asset)
+            }
+            var filtered = fetchedAssets.filter { !excludingLocalIdentifiers.contains($0.localIdentifier) }
+            if mode == .random {
+                filtered.shuffle()
+            }
+            return filtered
+        }.value
+    }
+    
+    fileprivate func handlePhotoLibraryChange(_: PHChange) {
+        guard hasResolvedInitialAuthorization else { return }
+        guard authorizationStatus == .authorized || authorizationStatus == .limited else { return }
+        
+        if !assets.isEmpty {
+            let ids = assets.map(\.localIdentifier)
+            let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+            var existing = Set<String>()
+            fetch.enumerateObjects { asset, _, _ in
+                existing.insert(asset.localIdentifier)
+            }
+            let filtered = assets.filter { existing.contains($0.localIdentifier) }
+            if filtered.count != assets.count {
+                assets = filtered
+            }
+        }
+        
+        if !deletionQueue.isEmpty {
+            let ids = deletionQueue.map(\.localIdentifier)
+            let fetch = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
+            var newQueue = Set<PHAsset>()
+            fetch.enumerateObjects { asset, _, _ in
+                newQueue.insert(asset)
+            }
+            if newQueue.count != deletionQueue.count {
+                deletionQueue = newQueue
+                persistDeletionQueueIdentifiers()
+                calculateDeletionQueueSize()
             }
         }
     }
@@ -160,6 +244,28 @@ class PhotoManager: ObservableObject {
         calculateDeletionQueueSize()
         if restored.count != stored.count {
             persistDeletionQueueIdentifiers()
+        }
+    }
+}
+
+// MARK: - Photo library observation
+
+/// Lives at file scope so it is not `@MainActor`-isolated; PhotoKit invokes callbacks on its own queue.
+private final class PhotoLibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserver {
+    weak var photoManager: PhotoManager?
+    
+    override init() {
+        super.init()
+        PHPhotoLibrary.shared().register(self)
+    }
+    
+    deinit {
+        PHPhotoLibrary.shared().unregisterChangeObserver(self)
+    }
+    
+    func photoLibraryDidChange(_ changeInstance: PHChange) {
+        Task { @MainActor [weak photoManager] in
+            photoManager?.handlePhotoLibraryChange(changeInstance)
         }
     }
 }

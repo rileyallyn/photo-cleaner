@@ -2,6 +2,7 @@ import SwiftUI
 import Photos
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var photoManager = PhotoManager()
     @State private var selectedMode: PhotoMode? = nil
     @State private var showingReview = false
@@ -58,6 +59,11 @@ struct ContentView: View {
             }
             .task {
                 await photoManager.performInitialAuthorizationRead()
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    photoManager.refreshAuthorizationFromSystem()
+                }
             }
         }
     }

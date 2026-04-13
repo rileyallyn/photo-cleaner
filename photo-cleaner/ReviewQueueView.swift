@@ -76,6 +76,16 @@ struct ReviewQueueView: View {
         return formatter.string(fromByteCount: photoManager.deletionQueueSize)
     }
     
+    /// Stable, user-meaningful order (newest first); `Set` iteration alone is undefined.
+    private var sortedDeletionQueue: [PHAsset] {
+        photoManager.deletionQueue.sorted {
+            let d0 = $0.creationDate ?? .distantPast
+            let d1 = $1.creationDate ?? .distantPast
+            if d0 != d1 { return d0 > d1 }
+            return $0.localIdentifier < $1.localIdentifier
+        }
+    }
+    
     var body: some View {
         NavigationStack {
             Group {
@@ -84,7 +94,7 @@ struct ReviewQueueView: View {
                 } else {
                     ScrollView {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
-                            ForEach(Array(photoManager.deletionQueue), id: \.localIdentifier) { asset in
+                            ForEach(sortedDeletionQueue, id: \.localIdentifier) { asset in
                                 ZStack(alignment: .topTrailing) {
                                     AssetThumbnail(asset: asset)
                                     Button {
