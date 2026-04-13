@@ -11,6 +11,7 @@ struct CardView: View {
     @State private var offset: CGSize = .zero
     @State private var image: UIImage? = nil
     @State private var isShowingDetails = false
+    @State private var zoomScale: CGFloat = 1.0
     
     private let threshold: CGFloat = 150
     private let dragMinimumDistance: CGFloat = 28
@@ -76,6 +77,18 @@ struct CardView: View {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: .fill)
+                        .scaleEffect(zoomScale)
+                        .gesture(
+                            MagnificationGesture()
+                                .onChanged { value in
+                                    zoomScale = value
+                                }
+                                .onEnded { _ in
+                                    withAnimation(.spring()) {
+                                        zoomScale = 1.0
+                                    }
+                                }
+                        )
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -145,6 +158,7 @@ struct CardView: View {
     
     private func endSwipeDrag() {
         if offset.width > threshold {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             withAnimation {
                 offset = CGSize(width: 1000, height: 0)
             }
@@ -152,6 +166,7 @@ struct CardView: View {
                 onSwipeRight()
             }
         } else if offset.width < -threshold {
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             withAnimation {
                 offset = CGSize(width: -1000, height: 0)
             }

@@ -16,6 +16,7 @@ class PhotoManager: ObservableObject {
     @Published var assets: [PHAsset] = []
     @Published var deletionQueue: Set<PHAsset> = []
     @Published var authorizationStatus: PHAuthorizationStatus = .notDetermined
+    @Published var deletionQueueSize: Int64 = 0
     /// `false` until the first `PHPhotoLibrary.authorizationStatus` read finishes — avoids blocking first frame.
     @Published var hasResolvedInitialAuthorization = false
     @Published var isLoading = false
@@ -89,6 +90,7 @@ class PhotoManager: ObservableObject {
     func addToDeletionQueue(_ asset: PHAsset) {
         deletionQueue.insert(asset)
         persistDeletionQueueIdentifiers()
+        calculateDeletionQueueSize()
         if let index = assets.firstIndex(of: asset) {
             assets.remove(at: index)
         }
@@ -106,12 +108,32 @@ class PhotoManager: ObservableObject {
             PHAssetChangeRequest.deleteAssets(assetsToDelete as NSArray)
         }
         deletionQueue.removeAll()
+        deletionQueueSize = 0
         persistDeletionQueueIdentifiers()
     }
     
     func removeFromDeletionQueue(_ asset: PHAsset) {
         deletionQueue.remove(asset)
         persistDeletionQueueIdentifiers()
+        calculateDeletionQueueSize()
+    }
+    
+    func calculateDeletionQueueSize() {
+        let assets = Array(deletionQueue)
+        Task {
+            var totalBytes: Int64 = 0
+            for asset in assets {
+                let resources = PHAssetResource.assetResources(for: asset)
+                if let resource = resources.first,
+                   let size = resource.value(forKey: "fileSize") as? Int64 {
+                    totalBytes += size
+                }
+            }
+            let finalBytes = totalBytes
+            await MainActor.run {
+                self.deletionQueueSize = finalBytes
+            }
+        }
     }
     
     // MARK: - Deletion queue persistence
@@ -135,6 +157,7 @@ class PhotoManager: ObservableObject {
             }
         }
         deletionQueue = restored
+        calculateDeletionQueueSize()
         if restored.count != stored.count {
             persistDeletionQueueIdentifiers()
         }

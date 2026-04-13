@@ -69,6 +69,13 @@ struct ReviewQueueView: View {
     @State private var errorMessage: String? = nil
     @State private var previewItem: QueuedPhotoPreviewItem?
     
+    private var formattedSize: String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useBytes, .useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: photoManager.deletionQueueSize)
+    }
+    
     var body: some View {
         NavigationStack {
             Group {
@@ -80,7 +87,6 @@ struct ReviewQueueView: View {
                             ForEach(Array(photoManager.deletionQueue), id: \.localIdentifier) { asset in
                                 ZStack(alignment: .topTrailing) {
                                     AssetThumbnail(asset: asset)
-                                    
                                     Button {
                                         photoManager.removeFromDeletionQueue(asset)
                                     } label: {
@@ -115,7 +121,7 @@ struct ReviewQueueView: View {
                     Button {
                         showingAlert = true
                     } label: {
-                        Text("Delete \(photoManager.deletionQueue.count) photos")
+                        Text("Delete \(photoManager.deletionQueue.count) photos (\(formattedSize))")
                             .font(.headline)
                             .foregroundStyle(.white)
                             .frame(maxWidth: .infinity)

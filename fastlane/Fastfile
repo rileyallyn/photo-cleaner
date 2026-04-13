@@ -1,0 +1,19 @@
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new release build to the App Store"
+  lane :release do
+    build_app(scheme: "photo-cleaner")
+    upload_to_app_store
+  end
+
+  desc "Build for App Store"
+  lane :build do
+    build_app(scheme: "photo-cleaner")
+  end
+
+  desc "Run tests"
+  lane :test do
+    scan(scheme: "photo-cleaner")
+  end
+end
