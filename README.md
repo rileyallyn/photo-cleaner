@@ -62,3 +62,4 @@ Distributed under the MIT License. See `LICENSE` for more information.
 
 - Built with [SwiftUI](https://developer.apple.com/xcode/swiftui/)
 - Powered by [PhotoKit](https://developer.apple.com/documentation/photokit)
+- Parts of this app was built with LLM assistance (Mainly Claude Opus 4.8, Cursor) 
