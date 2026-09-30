@@ -32,8 +32,10 @@ struct ContentView: View {
                         } label: {
                             Image(systemName: "trash.fill")
                                 .foregroundStyle(.red)
+                                .font(.title2)
                         }
                         .badge(photoManager.deletionQueue.count)
+                        
                     }
                 }
             }
@@ -50,7 +52,6 @@ struct ContentView: View {
                         showingReview = true
                     }
                 )
-                // Sheet must be on the presented cover; a sheet on the root stays under fullScreenCover.
                 .sheet(isPresented: $showingReview) {
                     ReviewQueueView(photoManager: photoManager)
                 }
@@ -120,30 +121,6 @@ struct ContentView: View {
                 }
             } header: {
                 Text("Choose a cleaning mode")
-            }
-            
-            if !photoManager.deletionQueue.isEmpty {
-                Section {
-                    Button(action: {
-                        showingReview = true
-                    }) {
-                        HStack {
-                            Image(systemName: "trash.fill")
-                                .frame(width: 30)
-                                .foregroundColor(.red)
-                            Text("Review Deletion Queue")
-                                .foregroundColor(.red)
-                            Spacer()
-                            Text("\(photoManager.deletionQueue.count)")
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.red)
-                                .foregroundColor(.white)
-                                .cornerRadius(10)
-                                .font(.caption.bold())
-                        }
-                    }
-                }
             }
         }
         .sheet(isPresented: homeReviewSheetBinding) {

@@ -63,7 +63,7 @@ struct CardView: View {
                     anchorZ: 0,
                     perspective: 0.92
                 )
-                // Without z-index, the opaque metadata face draws above the photo even when “rotated away” —
+                // Without z-index, the opaque metadata face draws above the photo even when “rotated away”
                 // SwiftUI doesn’t cull back-faces, so the image disappears.
                 .zIndex(isShowingDetails ? 0 : 1)
                 .allowsHitTesting(!isShowingDetails)

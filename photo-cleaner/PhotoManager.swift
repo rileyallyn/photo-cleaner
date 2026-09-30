@@ -132,7 +132,7 @@ final class PhotoManager: ObservableObject {
         }
     }
     
-    /// Sum of `Data` chunks delivered for the asset’s first resource via `PHAssetResourceManager` (documented API).
+    /// Sum of `Data` chunks delivered for the asset’s first resource via `PHAssetResourceManager`
     nonisolated private static func byteLengthForPrimaryResource(of asset: PHAsset) async -> Int64 {
         await withCheckedContinuation { continuation in
             let resources = PHAssetResource.assetResources(for: asset)
@@ -220,7 +220,6 @@ final class PhotoManager: ObservableObject {
         }
     }
     
-    // MARK: - Deletion queue persistence
     
     private func persistDeletionQueueIdentifiers() {
         let ids = deletionQueue.map(\.localIdentifier).sorted()
@@ -248,9 +247,7 @@ final class PhotoManager: ObservableObject {
     }
 }
 
-// MARK: - Photo library observation
-
-/// Lives at file scope so it is not `@MainActor`-isolated; PhotoKit invokes callbacks on its own queue.
+/// Lives at file scope so it is not `@MainActor`-isolated
 private final class PhotoLibraryChangeObserver: NSObject, PHPhotoLibraryChangeObserver {
     weak var photoManager: PhotoManager?
     

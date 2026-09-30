@@ -69,7 +69,7 @@ struct SwipeView: View {
                     } else if photoManager.assets.isEmpty {
                         sessionCompleteContent
                     } else {
-                        // Single visible card only — stacking two `CardView`s caused the back image to peek at the
+                        // Single visible card only stacking two `CardView`s caused the back image to peek at the
                         // sides whenever the front card uses offset/rotation/shadow (layout vs. drawn bounds).
                         GeometryReader { geo in
                             let horizontalInset: CGFloat = 16
