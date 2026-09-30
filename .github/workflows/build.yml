@@ -22,4 +22,4 @@ jobs:
 
     - name: Build
       run: |
-        xcodebuild -project photo-cleaner.xcodeproj -scheme photo-cleaner -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15,OS=latest' build
+        xcodebuild -project photo-cleaner.xcodeproj -scheme photo-cleaner -sdk iphonesimulator -destination "generic/platform=iOS Simulator" build
