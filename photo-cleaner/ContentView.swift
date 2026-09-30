@@ -50,12 +50,13 @@ struct ContentView: View {
                         showingReview = true
                     }
                 )
+                // Sheet must be on the presented cover; a sheet on the root stays under fullScreenCover.
+                .sheet(isPresented: $showingReview) {
+                    ReviewQueueView(photoManager: photoManager)
+                }
                 .onAppear {
                     photoManager.fetchPhotos(mode: mode)
                 }
-            }
-            .sheet(isPresented: $showingReview) {
-                ReviewQueueView(photoManager: photoManager)
             }
             .task {
                 await photoManager.performInitialAuthorizationRead()
@@ -145,6 +146,17 @@ struct ContentView: View {
                 }
             }
         }
+        .sheet(isPresented: homeReviewSheetBinding) {
+            ReviewQueueView(photoManager: photoManager)
+        }
+    }
+    
+    /// Only present from the home list when swipe isn’t covering the screen (avoids two sheets on one flag).
+    private var homeReviewSheetBinding: Binding<Bool> {
+        Binding(
+            get: { showingReview && selectedMode == nil },
+            set: { showingReview = $0 }
+        )
     }
     
     private func modeIcon(for mode: PhotoMode) -> String {

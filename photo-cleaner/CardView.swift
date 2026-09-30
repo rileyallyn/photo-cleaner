@@ -23,8 +23,8 @@ struct CardView: View {
         ZStack {
             flipStack
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(.systemBackground))
+        .frame(maxWidth: 370, maxHeight: 500)
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .shadow(color: .black.opacity(0.12), radius: 12, x: 0, y: 6)
         .overlay(
@@ -86,7 +86,7 @@ struct CardView: View {
                 if let image = image {
                     Image(uiImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: .fit)
                         .scaleEffect(zoomScale)
                 } else {
                     ProgressView()
